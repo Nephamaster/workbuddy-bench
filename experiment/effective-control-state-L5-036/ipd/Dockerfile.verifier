@@ -1,0 +1,20 @@
+ARG BASE_IMAGE=pi-ipd/general-purpose:1.0.0
+FROM ${BASE_IMAGE}
+USER root
+COPY uv /usr/local/bin/uv
+COPY workbuddy /opt/workbuddy
+ENV UV_PYTHON_DOWNLOADS=never UV_DEFAULT_INDEX=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple PYTHONDONTWRITEBYTECODE=1
+ARG HARBOR_COMMIT=527d50deb63a5d279e8c20593c18a2cbc7f61f9e
+RUN cd /opt/workbuddy \
+    && grep -q "$HARBOR_COMMIT" uv.lock \
+    && uv export --frozen --no-dev --no-emit-project --no-emit-package harbor -o /tmp/requirements.txt >/dev/null \
+    && uv venv .venv \
+    && uv pip install --python .venv/bin/python -r /tmp/requirements.txt \
+    && curl --fail --location --retry 3 --retry-all-errors --connect-timeout 20 --max-time 180 \
+       "https://codeload.github.com/harbor-framework/harbor/tar.gz/$HARBOR_COMMIT" -o /tmp/harbor.tar.gz \
+    && tar -xzf /tmp/harbor.tar.gz -C /tmp \
+    && uv pip install --python .venv/bin/python --no-deps "/tmp/harbor-$HARBOR_COMMIT" . \
+    && uv pip install --python .venv/bin/python 'pytest==8.3.4'
+ENV PATH=/opt/workbuddy/.venv/bin:/usr/local/bin:/usr/bin:/bin
+COPY score.py /opt/runner/score.py
+WORKDIR /workspace
