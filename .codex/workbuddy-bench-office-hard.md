@@ -604,3 +604,139 @@ Category: doc-ops    |    metadata.difficulty: hard
 这是一个多格式内容理解与演示文稿生成任务：以 XMind-like 思维导图为主要内容来源，参考一张版式图的层级/分组/左右分支/色彩/留白节奏，同时复用现有 PPTX 模板的主题色、页脚、卡片、分栏和行动矩阵，最终生成一份正式可打开的中文 PPTX。Agent 还要判断导图节点、备注、附件、图标和准备清单中哪些应进入正文、哪些只适合作为补充或省略，不能机械地“一节点一页”。
 
 其难点主要集中在内容重构、跨格式解析和最终 artifact 质量控制，而不是复杂业务状态推理。多智能体可以拆成 Content Strategist、Deck Architect/Writer、Template/Layout Executor 和 PPTX QA Reviewer。对于你的系统，它更适合测试“专家分工 + 最终集成交付”，但相较 release gate、control-state 或通知流水线，长程状态依赖和错误传播深度较弱。
+
+---
+
+## 评估方法
+
+### 1. Rule Score：确定性检查得分
+
+每个任务都有一个 `eval_core.py`，会把最终产物拆成大量 **atomic checks**。例如检查：
+
+* 输出文件是否存在、能否正常解析；
+* JSON 字段 / Excel sheet / 文档结构是否完整；
+* 关键值、金额、日期、状态是否正确；
+* 跨文件关联是否正确；
+* source / evidence 是否绑定正确；
+* summary 是否和明细一致；
+* 是否包含本应排除的数据；
+* 是否错误修改了不允许修改的 workspace 状态。
+
+每一个 check 只有 `pass / fail` 两种结果，因此：
+
+$$
+\boxed{
+R=\text{Rule Score}
+=\frac{\text{通过的 atomic checks 数}}
+{\text{全部 atomic checks 数}}
+}
+$$
+
+例如 `effective-control-state-L5-036` 一共定义了 **653 个 deterministic checks**。如果通过 600 个：
+
+$$
+R=\frac{600}{653}=0.9188
+$$
+
+这个分数在结果里主要对应 `test_pass_rate`。
+
+### 2. LLM Judge Score：语义质量得分
+
+每个任务还定义若干条 rubric，用于评价不适合 exact-match 的内容，例如：
+
+* 报告的解释是否清楚；
+* 不同证据是否被合理综合；
+* 建议是否可执行；
+* 多个输出之间的叙事是否一致；
+* PPT 是否形成合理的信息层级，而不是简单堆砌原始材料。
+
+每条 rubric 仍然是**二值评分**：
+
+$$
+s_i=
+\begin{cases}
+1,&pass\\
+0,&fail
+\end{cases}
+$$
+
+最终：
+
+$$
+\boxed{
+J=\text{LLM Judge Score}
+=\frac{\sum_i s_i}{N_{\text{rubric}}}
+}
+$$
+
+例如一个任务有 5 条 rubric，通过 4 条：
+
+$$
+J=\frac45=0.8
+$$
+
+在当前 13 个 hard Office 任务里，rubric 数量从 **1 条到 18 条**不等。例如：
+
+* `effective-control-state-L5-036`：18 条；
+* `wechat-tech-topic-package-hardened`：13 条；
+* `xmind-screenshot-template-ppt`：6 条；
+* `daily-creation-checkpoint-recovery`：1 条。
+
+### 3. Reward：最终任务得分
+
+最终按照每个任务 `judge.yaml` 中配置的权重，将 Rule Score 和 LLM Judge Score加权：
+
+$$
+\boxed{
+Reward=
+\frac{w_RR+w_JJ}{w_R+w_J}
+}
+$$
+
+这些任务的权重本身一般已经满足 \(w_R+w_J=1\)，所以通常就是：
+
+$$
+Reward=w_RR+w_JJ
+$$
+
+13 个 hard 任务的实际权重大致如下：
+
+| 任务                                   |     Rule | LLM Judge |
+| ------------------------------------ | -------: | --------: |
+| `effective-control-state-L5-036`     |     0.70 |      0.30 |
+| `xmind-screenshot-template-ppt`      |     0.75 |      0.25 |
+| 大多数 hard 任务                          | **0.80** |  **0.20** |
+| `invoice-email-archive-manifest`     |     0.90 |      0.10 |
+| `daily-creation-checkpoint-recovery` |     0.95 |      0.05 |
+
+例如某个典型 hard task：
+
+$$
+R=0.90,\quad J=0.75
+$$
+
+配置为 Rule 80%、Judge 20%，则：
+
+$$
+Reward=0.8\times0.90+0.2\times0.75
+=\boxed{0.87}
+$$
+
+**Rule Score 反映客观任务完成正确率，LLM Judge Score 补充语义/表达/组织质量，Reward 是 Benchmark 最终使用的任务得分。**
+
+另外，跨任务统计时可以进一步报告：
+
+$$
+\boxed{
+Mean\ Reward=\frac1N\sum_{i=1}^{N}Reward_i
+}
+$$
+
+以及 `pass_rate`。当前框架把最终 `reward = 1.0` 的 trial 视为 `full_pass`，因此：
+
+$$
+\boxed{
+PassRate=
+\frac{\text{满分任务数}}{\text{总任务数}}
+}
+$$
